@@ -1,145 +1,93 @@
-#! /usr/bin/env python
-import re, argparse
-from smartcard.System import readers
-import datetime, sys
+#! /usr/bin/env python3
+"""
+Using pyscard to log NFC taps.
+"""
 
-#ACS ACR122U NFC Reader
-#Suprisingly, to get data from the tag, it is a handshake protocol
-#You send it a command to get data back
-#This command below is based on the "API Driver Manual of ACR122U NFC Contactless Smart Card Reader"
-COMMAND = [0xFF, 0xCA, 0x00, 0x00, 0x00] #handshake cmd needed to initiate data transfer
+from smartcard.scard import *
+import smartcard.util
 
-# get all the available readers
-r = readers()
-print("Available readers:", r)
+srTreeATR = \
+    [0x3B, 0x77, 0x94, 0x00, 0x00, 0x82, 0x30, 0x00, 0x13, 0x6C, 0x9F, 0x22]
+srTreeMask = \
+    [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
 
-def stringParser(dataCurr):
-#--------------String Parser--------------#
-    #([85, 203, 230, 191], 144, 0) -> [85, 203, 230, 191]
-    if isinstance(dataCurr, tuple):
-        temp = dataCurr[0]
-        code = dataCurr[1]
-    #[85, 203, 230, 191] -> [85, 203, 230, 191]
-    else:
-        temp = dataCurr
-        code = 0
 
-    dataCurr = ''
 
-    #[85, 203, 230, 191] -> bfe6cb55 (int to hex reversed)
-    for val in temp:
-        # dataCurr += (hex(int(val))).lstrip('0x') # += bf
-        dataCurr += format(val, '#04x')[2:] # += bf
+def printstate(state):
+    reader, eventstate, atr = state
+    print(reader + " " + smartcard.util.toHexString(atr, smartcard.util.HEX))
+    with open("users.txt", "a") as users_file:
+        users_file.write(smartcard.util.toHexString(atr, smartcard.util.HEX) +"\tUnknown\n")
+    if eventstate & SCARD_STATE_ATRMATCH:
+        print('\tCard found')
+    if eventstate & SCARD_STATE_UNAWARE:
+        print('\tState unware')
+        
+    if eventstate & SCARD_STATE_IGNORE:
+        print('\tIgnore reader')
+    if eventstate & SCARD_STATE_UNAVAILABLE:
+        print('\tReader unavailable')
+    if eventstate & SCARD_STATE_EMPTY:
+        print('\tReader empty')
+    if eventstate & SCARD_STATE_PRESENT:
+        print('\tCard present in reader')
+    if eventstate & SCARD_STATE_EXCLUSIVE:
+        print('\tCard allocated for exclusive use by another application')
+    if eventstate & SCARD_STATE_INUSE:
+        print('\tCard in used by another application but can be shared')
+    if eventstate & SCARD_STATE_MUTE:
+        print('\tCard is mute')
+    if eventstate & SCARD_STATE_CHANGED:
+        print('\tState changed')
+    if eventstate & SCARD_STATE_UNKNOWN:
+        print('\tState unknowned')
 
-    #bfe6cb55 -> BFE6CB55
-    dataCurr = dataCurr.upper()
-
-    #if return is successful
-    if (code == 144):
-        return dataCurr
-
-def readTag(page):
-    readingLoop = 1
-    while(readingLoop):
+def log_cards():
+    while True:
         try:
-            connection = reader.createConnection()
-            status_connection = connection.connect()
-            connection.transmit(COMMAND)
-            #Read command [FF, B0, 00, page, #bytes]
-            resp = connection.transmit([0xFF, 0xB0, 0x00, int(page), 0x04])
-            dataCurr = stringParser(resp)
+            hresult, hcontext = SCardEstablishContext(SCARD_SCOPE_USER)
+            if hresult != SCARD_S_SUCCESS:
+                raise error(
+                    'Failed to establish context: ' +
+                    SCardGetErrorMessage(hresult))
+            print('Context established!')
 
-            #only allows new tags to be worked so no duplicates
-            if(dataCurr is not None):
-                print (dataCurr)
-                break
-            else:
-                print ("Something went wrong. Page " + str(page))
-                break
-        except Exception as e: 
-            if(waiting_for_beacon ==1):
-                continue
-            else:
-                readingLoop=0
-                print (str(e))
-                break
-
-def writeTag(page, value):
-    if type(value) != str:
-        print ("Value input should be a string")
-        exit()
-    while(1):
-        if len(value) == 8:
             try:
-                connection = reader.createConnection()
-                status_connection = connection.connect()
-                connection.transmit(COMMAND)
-                WRITE_COMMAND = [0xFF, 0xD6, 0x00, int(page), 0x04, int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16), int(value[6:8], 16)]
-                # Let's write a page Page 9 is usually 00000000
-                resp = connection.transmit(WRITE_COMMAND)
-                if resp[1] == 144:
-                    print("Wrote " + value + " to page " + str(page))
-                    break
-            except Exception as e:
-                continue
-        else:
-            print("Must have a full 4 byte write value")
-            break
+                hresult, readers = SCardListReaders(hcontext, [])
+                if hresult != SCARD_S_SUCCESS:
+                    raise error(
+                        'Failed to list readers: ' +
+                        SCardGetErrorMessage(hresult))
+                print('PCSC Readers:', readers)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Read / write NFC tags')
-    usingreader_group = parser.add_argument_group('usingreader')
-    usingreader_group.add_argument('--usingreader', nargs=1, metavar='READER_ID', help='Reader to use [0-X], default is 0')
-    wait_group = parser.add_argument_group('wait')
-    wait_group.add_argument('--wait', nargs=1, metavar='0|1', help='Wait for beacon before returns [0|1], default is 1')
-    read_group = parser.add_argument_group('read')
-    read_group.add_argument('--read', nargs='+', help='Pages to read. Can be a x-x range, or list of pages')
-    write_group = parser.add_argument_group('write')
-    write_group.add_argument('--write', nargs=2, metavar=('PAGE', 'DATA'), help='Page number and hex value to write.')
+                readerstates = []
+                for i in range(len(readers)):
+                    readerstates += [(readers[i], SCARD_STATE_UNAWARE)]
 
+                print('----- Current reader and card states are: -------')
+                hresult, newstates = SCardGetStatusChange(hcontext, 0, readerstates)
+                for i in newstates:
+                    printstate(i)
 
-    args = parser.parse_args()
+                print('----- Please insert or remove a card ------------')
+                hresult, newstates = SCardGetStatusChange(
+                                        hcontext,
+                                        INFINITE,
+                                        newstates)
 
-    #Choosing which reader to use
-    if args.usingreader:
-        usingreader = args.usingreader[0]
-        if (int(usingreader) >= 0 and int(usingreader) <= len(r)-1):
-            reader = r[int(usingreader)]
-        else:
-            reader = r[0]
-    else:
-        reader = r[0]
+                print('----- New reader and card states are: -----------')
+                for i in newstates:
+                    printstate(i)
 
-    print("Using:", reader)
+            finally:
+                hresult = SCardReleaseContext(hcontext)
+                if hresult != SCARD_S_SUCCESS:
+                    raise error(
+                        'Failed to release context: ' +
+                        SCardGetErrorMessage(hresult))
+                print('Released context.')
 
-    #Disabling wait for answer if wait == 0
-    if args.wait:
-        wait = args.wait[0]
-        if (int(wait) == 0 ):
-            waiting_for_beacon = 0
-        else:
-            waiting_for_beacon = 1
-    else:
-        waiting_for_beacon = 1
-
-    print("Using:", reader)
-
-    #Only going to write one page at a time
-    if args.write:
-        page = args.write[0]
-        data = args.write[1]
-        if len(data) == 8:
-            writeTag(int(page), data)
-        else:
-            raise argparse.ArgumentTypeError("Must have a full 4 byte write value")
-    
-    #Page numbers are sent as ints, not hex, to the reader
-    if args.read:
-        for page in args.read:
-            if "-" in page:
-                start = int(page.split("-")[0])
-                end = int(page.split("-")[1])
-                for new_page in xrange(start, end+1):
-                    readTag(new_page)
-            else:
-                readTag(page)
+        except error as e:
+            print(e)
+        
+log_cards()
